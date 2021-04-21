@@ -11,7 +11,9 @@ const char* wifi_name = "LEON.PL_8214_2G";
 const char* password = "27b482aa";
 String serverName = "http://192.168.0.107:3000";
 
-bool canSendData = true;
+bool canSendData = false;
+uint32_t measurementCount = 0;
+constexpr size_t measurementSize = 4;
 
 MAX30105 particleSensor;
 double R = 0;
@@ -24,6 +26,11 @@ uint32_t maxRED = 0;
 uint32_t minRED = 0;
 uint32_t size = 1000;
 constexpr size_t numberOfSamples = 1000;
+
+
+double hrValues[measurementSize]{0};
+double spo2Values[measurementSize]{0};
+float temperatureValues[measurementSize]{0};
 
 uint32_t heartRateValues[numberOfSamples]{0};
 uint32_t iter = 0;
@@ -79,18 +86,21 @@ if(checkForBeat(irValue)==true ){
 }
 
 double getBloodSaturation() {
-        double meanRED = (maxRED-minRED)/2; 
-        double meanIR = (maxIR-minIR)/2; 
-        R = (maxRED/meanRED)/(maxIR/meanIR);
+        double meanRED =  (maxIR+minIR)/2; 
+        double meanIR = (maxRED+minRED)/2;
+        double acRed = maxIR-minIR;
+        double acIr = maxRED-minRED;
+        R = (acRed/meanRED)/(acIr/meanIR);
+        Serial.println(R);
         double SPO2 = 110 - 25*R;
         if(SPO2 > 100) {
-          SPO2 = 100;
+          SPO2 = 100.0;
         }
         return SPO2;
 }
 
 double getHeartRate() {
-  uint32_t hrBeatsCount = 0;
+          uint32_t hrBeatsCount = 0;
           uint32_t hrSum = 0;
           
           for(size_t i=0; i<size;i++) {
@@ -100,10 +110,12 @@ double getHeartRate() {
             }
 
           }
-  return (hrSum)/hrBeatsCount;
+          double pulse = (hrSum)/hrBeatsCount;
+  return pulse;
 }
 
 void reset() {
+    measurementCount +=1;
     iter = 0;
     maxRED = RED;
     minRED = RED;
@@ -138,14 +150,26 @@ bool sensorCanSendData(){
 }
 
 void sendData(double bloodSaturation,double heartRate, float temperature) {
+    Serial.println("");
+    Serial.println("oooooooooooooooooooooooooo");
+    Serial.println("Wynik końcowy: ");
+    Serial.println("oooooooooooooooooooooooooo");
+    Serial.print("SATURACJA: ");
+    Serial.println(bloodSaturation);
+    Serial.print("TETNO: ");
+    Serial.println(heartRate);
+    Serial.print("TEMPERATURA: ");
+    Serial.println(temperature);
+
   if(canSendData) {
     DynamicJsonDocument doc(2048);
-    doc["bloodSaturation"] = bloodSaturation;
-    doc["heartRate"] = heartRate;
+    doc["saturation"] = bloodSaturation;
+    doc["pulse"] = heartRate;
     doc["temperature"] = temperature;
     String json;
     serializeJson(doc, json);
-    http.begin("http://192.168.0.107:3000/addData");
+    http.begin("http://192.168.0.107:3000/addMeasurement");
+    http.addHeader("Content-Type", "application/json");
     http.POST(json);
     Serial.print(http.getString());
     http.end();
@@ -160,6 +184,7 @@ void loop() {
     getSampleAndCheckSensor();
     if (sensorCanSendData()) {
 
+      
       IR = particleSensor.getFIFOIR();
       RED = particleSensor.getFIFORed();
       
@@ -172,9 +197,22 @@ void loop() {
         
         if(iter==numberOfSamples) {
 
+        Serial.print("MAX RED: ");
+        Serial.println(maxRED);
+        Serial.print("MIN RED: ");
+        Serial.println(minRED);
+
+        Serial.print("MAX IR: ");
+        Serial.println(maxIR);
+        Serial.print("MIN IR: ");
+        Serial.println(minIR);
+
         double bloodSaturation = getBloodSaturation();
         double heartRate = getHeartRate();
         float temperature = particleSensor.readTemperature();
+        Serial.print("Numer pomiaru: ");
+        Serial.println(measurementCount);
+        Serial.println("-------------");
         Serial.print("SATURACJA: ");
         Serial.println(bloodSaturation);
         Serial.print("TETNO: ");
@@ -182,7 +220,47 @@ void loop() {
         Serial.print("TEMPERATURA: ");
         Serial.println(temperature);
 
-        sendData(bloodSaturation, heartRate,temperature);
+        spo2Values[measurementCount] = bloodSaturation;
+        hrValues[measurementCount] = heartRate;
+        temperatureValues[measurementCount] = temperature;
+
+        if (measurementCount == measurementSize)
+        {
+          canSendData = true;
+          double spo2Sum =0;
+          double hrSum =0;
+          double tempSum =0;
+
+          for(size_t i=0; i<measurementSize;i++) {
+            spo2Sum += spo2Values[i];
+            hrSum += hrValues[i];
+            tempSum += temperatureValues[i];
+          }          
+          double spo2 = spo2Sum/measurementSize;
+          double hr = hrSum/measurementSize;
+          float temp = tempSum/measurementSize;
+
+          float standard = 24.5;
+          if(temp > standard) {
+            float diffUpper = temp - standard;
+            float cTempFactorUpper = (diffUpper*0.1);
+            float tempUpper = 36.6+cTempFactorUpper;
+            sendData(spo2, hr,tempUpper);
+          } else {
+            float diffUnder = standard - temp;
+            float cTempFactorUnder = (diffUnder*0.1);
+            float tempUnder = 36.6-cTempFactorUnder;
+            sendData(spo2, hr,tempUnder);
+          }
+
+
+          measurementCount = 0;
+        }
+        
+          
+        
+
+        
         reset();
 
       }  
